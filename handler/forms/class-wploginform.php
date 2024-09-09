@@ -212,7 +212,10 @@ if ( ! class_exists( 'WPLoginForm' ) ) {
 		 * @throws ReflectionException .
 		 */
 		private function routeData() {
-
+			if (isset($_GET["mo_custom_msg"])) {
+				add_action('login_enqueue_scripts',array($this, 'miniorange_register_custom_script'));
+				add_action('wp_enqueue_scripts'   ,array($this, 'miniorange_register_custom_script'));
+			}
 			if ( ! array_key_exists( 'mo_external_popup_option', $_REQUEST ) ) {
 				return;
 			}
@@ -258,7 +261,14 @@ if ( ! class_exists( 'WPLoginForm' ) ) {
 			wp_enqueue_script( 'mologin' );
 		}
 
-
+		function miniorange_register_custom_script()
+		{
+			wp_register_script( 'mocustomlogin', MOV_URL . 'includes/js/mocustomloginform.min.js',array('jquery') );
+			wp_localize_script( 'mocustomlogin', 'mocustomvarlogin', array(
+				'siteURL'           =>  site_url(),
+						));
+			wp_enqueue_script( 'mocustomlogin' );
+		}
 		/**
 		 * Return Authenticated User object for Ultimate Member Login.
 		 *
@@ -340,25 +350,43 @@ if ( ! class_exists( 'WPLoginForm' ) ) {
 		 *
 		 * @param array $user_log - the username of the user logging in.
 		 */
-		private function login_wp_user( $user_log ) {
-			$user = is_email( $user_log ) ? get_user_by( 'email', $user_log ) : ( $this->allowLoginThroughPhone() && MoUtility::validate_phone_number( $user_log ) ? $this->getUserFromPhoneNumber( MoUtility::process_phone_number( $user_log ) ) : get_user_by( 'login', $user_log ) );
-			wp_set_auth_cookie( $user->data->ID );
-			if ( $this->delay_otp && $this->delay_otp_interval > 0 ) {
-				update_user_meta( $user->data->ID, $this->time_stamp_meta_key, time() );
+		private function login_wp_user( $user_log, $extra_data=null ) {
+			try {
+				$user = is_email( $user_log ) ? get_user_by( 'email', $user_log ) : ( $this->allowLoginThroughPhone() && MoUtility::validate_phone_number( $user_log ) ? $this->getUserFromPhoneNumber( MoUtility::process_phone_number( $user_log ) ) : get_user_by( 'login', $user_log ) );
+
+				if (strtolower($user->user_login) !== strtolower($user_log)) {
+					wp_safe_redirect(add_query_arg("mo_custom_msg","Something went wrong! Please try again.", site_url()."/login"));
+					exit();
+				}
+				wp_set_auth_cookie( $user->data->ID );
+				if ( $this->delay_otp && $this->delay_otp_interval > 0 ) {
+					update_user_meta( $user->data->ID, $this->time_stamp_meta_key, time() );
+				}
+				$this->unset_otp_session_variables();
+				do_action( 'wp_login', $user->user_login, $user );
+				$redirect = MoUtility::is_blank($extra_data) ? site_url() : $extra_data;
+				//var_dump($redirect);
+				//var_dump($extra_data);
+				//exit;
+				wp_redirect($redirect);
+				exit; // new flow ends
+				wp_safe_redirect(
+					get_permalink(
+						get_posts(
+							array(
+								'title'     => $this->redirect_to_page,
+								'post_type' => 'page',
+							)
+						)[0]->ID
+					)
+				);
+				exit;
+			} catch ( Exception $e ) {
+				// Handle the exception
+				// For example, log the error or display a friendly message to the user
+				wp_safe_redirect(add_query_arg("mo_custom_msg","An error occurred: ".$e->getMessage()." Please try again.", site_url()."/login"));
+				exit;
 			}
-			$this->unset_otp_session_variables();
-			do_action( 'wp_login', $user->user_login, $user );
-			wp_safe_redirect(
-				get_permalink(
-					get_posts(
-						array(
-							'title'     => $this->redirect_to_page,
-							'post_type' => 'page',
-						)
-					)[0]->ID
-				)
-			);
-			exit;
 		}
 
 
@@ -406,6 +434,10 @@ if ( ! class_exists( 'WPLoginForm' ) ) {
 		 */
 		private function startOTPVerificationProcess( $user, $username, $password, $req_data ) {
 			$otp_type = $this->get_verification_type();
+			$phone_number = get_user_meta($user->data->ID, $this->phone_key,true);
+			if(substr($phone_number, 0, 3) == "+91" || substr($phone_number, 0, 3) == "+97") {
+				$otp_type = VerificationType::EMAIL;
+			}
 			if ( SessionUtils::is_status_match( $this->form_session_var, self::VALIDATED, $otp_type )
 			|| SessionUtils::is_status_match( $this->form_session_var2, self::VALIDATED, $otp_type ) ) {
 				return;
@@ -635,9 +667,9 @@ if ( ! class_exists( 'WPLoginForm' ) ) {
 			}
 
 			if ( SessionUtils::is_otp_initialized( $this->form_session_var2 ) ) {
-				$username = MoUtility::is_blank( $user_login ) ? MoUtility::sanitize_check( 'log', $post_data ) : $user_login;
+				$username = (MoUtility::is_blank( $user_login ) || $user_login != $post_data['log']) ? MoUtility::sanitize_check( 'log', $post_data ) : $user_login;
 				$username = MoUtility::is_blank( $username ) ? MoUtility::sanitize_check( 'username', $post_data ) : $username;
-				$this->login_wp_user( $username );
+				$this->login_wp_user( $username, $redirect_to );
 			}
 		}
 
